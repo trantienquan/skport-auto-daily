@@ -1,0 +1,29 @@
+name: SKPort Auto Attendance
+
+on:
+  schedule:
+    # 00:30 UTC = 07:30 sáng giờ Việt Nam (UTC+7)
+    - cron: '33 8 * * *'
+  workflow_dispatch: # Cho phép bấm Run thủ công bằng tay
+
+jobs:
+  run-checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Execute Check-in
+        env:
+          PROFILES_JSON: ${{ secrets.PROFILES_JSON }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
+        run: python checkin.py
