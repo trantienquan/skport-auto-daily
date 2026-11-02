@@ -65,7 +65,6 @@ def generate_sign(path, method, headers, query, body, sign_token):
 
 def auto_login_with_password(email, password):
     try:
-        # Bước 1: Gọi API Đăng nhập
         login_res = requests.post(
             URL_DICT["Login"],
             json={"account": email, "password": password},
@@ -74,12 +73,11 @@ def auto_login_with_password(email, password):
         ).json()
         
         if login_res.get("status") != 0:
-            print(f"Lỗi đăng nhập: {login_res}")
+            print(f"Lỗi đăng nhập API: {login_res}")
             return None, None
             
         account_token = login_res.get("data", {}).get("token")
         
-        # Bước 2: Xin quyền OAuth Code
         grant_res = requests.post(
             URL_DICT["GrantOAuth"],
             json={"token": account_token, "appCode": "6eb76d4e13aa36e6", "type": 0},
@@ -89,7 +87,6 @@ def auto_login_with_password(email, password):
         
         oauth_code = grant_res.get("data", {}).get("code")
         
-        # Bước 3: Đổi OAuth Code lấy CRED và Sign Token
         cred_res = requests.post(
             URL_DICT["GenCred"],
             json={"code": oauth_code, "kind": 1},
@@ -130,14 +127,10 @@ def process_profile(profile, session_data):
     email = profile.get("email")
     password = profile.get("password")
     
-    # Lấy token từ file session.json
     user_session = session_data.get(role_id, {})
-    cred = user_session.get("cred")
-    sign_token = user_session.get("sign_token")
+    cred = user_session.get("cred") or profile.get("SK_OAUTH_CRED_KEY")
+    sign_token = user_session.get("sign_token") or profile.get("SK_TOKEN_CACHE_KEY")
     
-    need_relogin = True
-    
-    # Thử điểm danh với cookie đang lưu
     if cred and sign_token:
         try:
             res = execute_attendance(cred, sign_token, role_id, server, lang)
@@ -148,44 +141,37 @@ def process_profile(profile, session_data):
                 return f"💕 [{account_name}] Arknights Endfield: Đã điểm danh nhận quà! (๑˃̵ᴗ˂̵)ﻭ"
             elif "Please do not sign in again" in msg or "already" in msg.lower():
                 return f"💕 [{account_name}] Arknights Endfield: Quà đã nhận rồi! (¬_¬)♡"
-            elif code == 10000 or "not log" in msg.lower():
-                need_relogin = True # Hết hạn -> Chuyển qua đăng nhập lại
-            else:
-                return f"💔 [{account_name}] Arknights Endfield: Lỗi ({msg}) ( • ᴖ • )"
+            elif code != 10000 and "not log" not in msg.lower():
+                return f"💔 [{account_name}] Arknights Endfield: Lỗi rùi ({msg}) ( • ᴖ • )"
         except Exception as e:
             return f"💔 [{account_name}] Lỗi kết nối ({e})"
             
-    # Tiến hành Auto-Login bằng Email/Pass
-    if need_relogin:
-        if not email or not password:
-            return f"💔 [{account_name}] Chưa đăng nhập & Không có cấu hình Email/Pass 🥺"
-            
-        print(f"🔄 [{account_name}] Đang tự động đăng nhập lại bằng Email/Pass...")
-        new_cred, new_sign_token = auto_login_with_password(email, password)
+    if not email or not password:
+        return f"💔 [{account_name}] Cookie hết hạn và không có Email/Pass trong cấu hình! 🥺"
         
-        if new_cred and new_sign_token:
-            # Lưu lại mã mới vào object session
-            session_data[role_id] = {
-                "cred": new_cred,
-                "sign_token": new_sign_token
-            }
+    print(f"🔄 [{account_name}] Đang thử đăng nhập lại bằng Email/Pass...")
+    new_cred, new_sign_token = auto_login_with_password(email, password)
+    
+    if new_cred and new_sign_token:
+        session_data[role_id] = {
+            "cred": new_cred,
+            "sign_token": new_sign_token
+        }
+        try:
+            res_retry = execute_attendance(new_cred, new_sign_token, role_id, server, lang)
+            code_retry = res_retry.get("code")
+            msg_retry = res_retry.get("message", "")
             
-            try:
-                # Điểm danh lại với mã mới
-                res_retry = execute_attendance(new_cred, new_sign_token, role_id, server, lang)
-                code_retry = res_retry.get("code")
-                msg_retry = res_retry.get("message", "")
-                
-                if code_retry == 0:
-                    return f"💕 [{account_name}] Đã cấp lại Cookie & Điểm danh thành công! (๑˃̵ᴗ˂̵)ﻭ"
-                elif "Please do not sign in again" in msg_retry or "already" in msg_retry.lower():
-                    return f"💕 [{account_name}] Đã cấp lại Cookie, Quà hôm nay đã nhận! (¬_¬)♡"
-                else:
-                    return f"💔 [{account_name}] Lỗi sau khi cấp Cookie ({msg_retry}) ( • ᴖ • )"
-            except Exception as e:
-                return f"💔 [{account_name}] Lỗi mạng vòng 2 ({e})"
-        else:
-            return f"💔 [{account_name}] Đăng nhập tự động thất bại (Vui lòng kiểm tra lại Pass) 🥺"
+            if code_retry == 0:
+                return f"💕 [{account_name}] Đã cấp lại Cookie & Điểm danh thành công! (๑˃̵ᴗ˂̵)ﻭ"
+            elif "Please do not sign in again" in msg_retry or "already" in msg_retry.lower():
+                return f"💕 [{account_name}] Đã cấp lại Cookie, Quà hôm nay đã nhận! (¬_¬)♡"
+            else:
+                return f"💔 [{account_name}] Lỗi sau khi cấp Cookie ({msg_retry}) ( • ᴖ • )"
+        except Exception as e:
+            return f"💔 [{account_name}] Lỗi mạng sau đăng nhập ({e})"
+    else:
+        return f"💔 [{account_name}] Cookie không hợp lệ và Đăng nhập tự động bị máy chủ chặn. Vui lòng cập nhật session.json! 🥺"
 
 def send_discord(content):
     if not DISCORD_WEBHOOK:
@@ -212,9 +198,9 @@ def main():
     for p in profiles:
         msg = process_profile(p, session_data)
         messages.append(msg)
-        time.sleep(2) # Tránh gửi request quá nhanh liên tiếp
+        time.sleep(2)
         
-    save_session(session_data) # Lưu file session.json cập nhật
+    save_session(session_data)
     
     output_text = "\n".join(messages)
     print(output_text)
