@@ -12,6 +12,9 @@ DISCORD_USER_ID = os.getenv("DISCORD_USER_ID", "")
 URL_DICT = {
     "Endfield": "https://zonai.skport.com/web/v1/game/endfield/attendance",
     "RefreshAuth": "https://zonai.skport.com/web/v1/auth/refresh",
+    "Login": "https://as.gryphline.com/user/info/v1/login_by_password",
+    "GrantOAuth": "https://as.gryphline.com/user/oauth2/v2/grant",
+    "GenCred": "https://zonai.skport.com/web/v1/user/auth/generate_cred_by_code"
 }
 
 BASE_HEADERS = {
@@ -52,21 +55,54 @@ def refresh_sign_token(cred):
         res = requests.get(URL_DICT["RefreshAuth"], headers=headers, timeout=10).json()
         if res.get("code") == 0 and res.get("data", {}).get("token"):
             return res["data"]["token"]
-    except Exception as e:
-        print(f"Lỗi khi refresh token: {e}")
+    except Exception:
+        pass
     return None
 
-def auto_sign_profile(profile):
-    cred = profile.get("SK_OAUTH_CRED_KEY")
-    role_id = profile.get("id")
-    server = profile.get("server", "2")
-    lang = profile.get("language", "en")
-    
-    # Ưu tiên lấy token mới từ API refresh, nếu có sẵn SK_TOKEN_CACHE_KEY trong JSON thì dùng làm dự phòng
-    sign_token = refresh_sign_token(cred) or profile.get("SK_TOKEN_CACHE_KEY")
-    if not sign_token:
-        return "💔 Arknights Endfield: Cookie tạch rùi 🥺"
+def auto_login_with_password(email, password):
+    """Hàm tự động đăng nhập từ gốc lấy CRED mới nếu hệ thống không có Captcha"""
+    try:
+        # Bước 1: Gọi API Đăng nhập
+        login_res = requests.post(
+            URL_DICT["Login"],
+            json={"account": email, "password": password},
+            headers={"Content-Type": "application/json", "User-Agent": BASE_HEADERS["User-Agent"]},
+            timeout=10
+        ).json()
+        
+        if login_res.get("status") != 0:
+            print(f"Login API failed: {login_res}")
+            return None, None
+            
+        account_token = login_res.get("data", {}).get("token")
+        
+        # Bước 2: Xin quyền OAuth Code (appCode chuẩn của SKPort Web)
+        grant_res = requests.post(
+            URL_DICT["GrantOAuth"],
+            json={"token": account_token, "appCode": "6eb76d4e13aa36e6", "type": 0},
+            headers={"Content-Type": "application/json"},
+            timeout=10
+        ).json()
+        
+        oauth_code = grant_res.get("data", {}).get("code")
+        
+        # Bước 3: Đổi OAuth Code lấy CRED và Sign Token
+        cred_res = requests.post(
+            URL_DICT["GenCred"],
+            json={"code": oauth_code, "kind": 1},
+            headers=BASE_HEADERS,
+            timeout=10
+        ).json()
+        
+        new_cred = cred_res.get("data", {}).get("cred")
+        new_sign_token = cred_res.get("data", {}).get("token")
+        
+        return new_cred, new_sign_token
+    except Exception as e:
+        print(f"Lỗi quá trình Auto-Login: {e}")
+        return None, None
 
+def execute_attendance(account_name, cred, sign_token, role_id, server, lang):
     path = "/web/v1/game/endfield/attendance"
     timestamp = str(int(time.time()))
     
@@ -80,21 +116,68 @@ def auto_sign_profile(profile):
     })
     headers["sign"] = generate_sign(path, "POST", headers, "", "", sign_token)
     
-    try:
-        res = requests.post(URL_DICT["Endfield"], headers=headers, data="", timeout=10).json()
-        code = res.get("code")
-        msg = res.get("message", "")
+    res = requests.post(URL_DICT["Endfield"], headers=headers, data="", timeout=10).json()
+    return res
+
+def auto_sign_profile(profile):
+    account_name = profile.get("accountName", "Unknown")
+    cred = profile.get("SK_OAUTH_CRED_KEY")
+    role_id = profile.get("id")
+    server = profile.get("server", "2")
+    lang = profile.get("language", "en")
+    
+    email = profile.get("email")
+    password = profile.get("password")
+    
+    # Ưu tiên làm mới token ký với chuỗi cred đang có
+    sign_token = refresh_sign_token(cred) or profile.get("SK_TOKEN_CACHE_KEY")
+    need_relogin = False
+    
+    if sign_token:
+        try:
+            # Thử điểm danh nghiệm thu
+            res = execute_attendance(account_name, cred, sign_token, role_id, server, lang)
+            code = res.get("code")
+            msg = res.get("message", "")
+            
+            if code == 0:
+                return f"💕 [{account_name}] Arknights Endfield: Đã điểm danh nhận quà! (๑˃̵ᴗ˂̵)ﻭ"
+            elif "Please do not sign in again" in msg:
+                return f"💕 [{account_name}] Arknights Endfield: Quà đã nhận rồi! (¬_¬)♡"
+            elif code == 10000 or "not log" in msg.lower():
+                need_relogin = True # Bị bắt lỗi hết hạn, chuyển sang luồng auto-login
+            else:
+                return f"💔 [{account_name}] Arknights Endfield: Lỗi rùi ({msg}) ( • ᴖ • )"
+        except Exception as e:
+            return f"💔 [{account_name}] Lỗi kết nối ({e})"
+    else:
+        need_relogin = True
+
+    # Khởi chạy quy trình Auto-Login bằng Email/Pass
+    if need_relogin:
+        if not email or not password:
+            return f"💔 [{account_name}] Cookie hết hạn & Không có cấu hình Email/Pass để tự đăng nhập 🥺"
+            
+        print(f"🔄 [{account_name}] Cookie hết hạn, đang tự động đăng nhập lại bằng Email...")
+        new_cred, new_sign_token = auto_login_with_password(email, password)
         
-        if code == 10000:
-            return "💔 Arknights Endfield: Cookie tạch rùi 🥺"
-        elif code == 0:
-            return "💕 Arknights Endfield: Đã điểm danh nhận quà! (๑˃̵ᴗ˂̵)ﻭ"
-        elif "Please do not sign in again" in msg:
-            return "💕 Arknights Endfield: Quà đã nhận rồi! (¬_¬)♡"
+        if new_cred and new_sign_token:
+            try:
+                # Thực hiện lại điểm danh với Credentials mới tinh
+                res_retry = execute_attendance(account_name, new_cred, new_sign_token, role_id, server, lang)
+                code_retry = res_retry.get("code")
+                msg_retry = res_retry.get("message", "")
+                
+                if code_retry == 0:
+                    return f"💕 [{account_name}] Tự động gia hạn Cookie & Điểm danh thành công! (๑˃̵ᴗ˂̵)ﻭ"
+                elif "Please do not sign in again" in msg_retry:
+                    return f"💕 [{account_name}] Tự gia hạn Cookie xong, Quà hôm nay đã nhận rồi! (¬_¬)♡"
+                else:
+                    return f"💔 [{account_name}] Lỗi sau khi gia hạn ({msg_retry}) ( • ᴖ • )"
+            except Exception as e:
+                return f"💔 [{account_name}] Lỗi mạng vòng 2 ({e})"
         else:
-            return f"💔 Arknights Endfield: Lỗi rùi ({msg}) ( • ᴖ • )"
-    except Exception as e:
-        return f"💔 Arknights Endfield: Lỗi rùi ({e}) ( • ᴖ • )"
+            return f"💔 [{account_name}] Đăng nhập tự động thất bại (Có thể do sai Pass, hoặc API yêu cầu mã hóa/Captcha) 🥺"
 
 def send_discord(content):
     if not DISCORD_WEBHOOK:
@@ -104,7 +187,10 @@ def send_discord(content):
         final_msg += f"<@{DISCORD_USER_ID}>\n"
     final_msg += "🎀 THÔNG BÁO ĐIỂM DANH 🎀\n"
     final_msg += content
-    requests.post(DISCORD_WEBHOOK, json={"content": final_msg}, timeout=10)
+    try:
+        requests.post(DISCORD_WEBHOOK, json={"content": final_msg}, timeout=10)
+    except Exception as e:
+        print(f"Không gửi được Discord: {e}")
 
 def main():
     if not PROFILES_JSON:
