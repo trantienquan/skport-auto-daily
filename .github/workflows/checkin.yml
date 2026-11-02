@@ -2,9 +2,13 @@ name: SKPort Auto Attendance
 
 on:
   schedule:
-    # 00:30 UTC = 07:30 sáng giờ Việt Nam (UTC+7)
-    - cron: '33 8 * * *'
-  workflow_dispatch: # Cho phép bấm Run thủ công bằng tay
+    # Chạy vào 00:30 UTC mỗi ngày (Khoảng 07:30 sáng giờ Việt Nam)
+    - cron: '33 22 * * *'
+  workflow_dispatch:
+
+# Cho phép Action push code ngược lên repo
+permissions:
+  contents: write
 
 jobs:
   run-checkin:
@@ -27,3 +31,15 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
         run: python checkin.py
+
+      - name: Commit and push session file
+        run: |
+          # Thiết lập danh tính bot để commit
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Cố gắng add file session.json (bỏ qua nếu không có thay đổi)
+          git add session.json
+          
+          # Kiểm tra xem có file nào thay đổi không, nếu có thì commit & push
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: auto-update session cookies" && git push)
